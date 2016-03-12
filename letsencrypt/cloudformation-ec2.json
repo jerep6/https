@@ -1,0 +1,163 @@
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "Create an EC2 instance for Let's Encrypt",
+
+  "Parameters" : {
+    "KeyName": {
+      "Description" : "Name of an existing EC2 KeyPair to enable SSH access to the instance",
+      "Type": "AWS::EC2::KeyPair::KeyName",
+      "ConstraintDescription" : "must be the name of an existing EC2 KeyPair."
+    },
+    "Bucket": {
+      "Description" : "Bucket",
+      "Type": "String",
+      "Default": ""
+    },
+    "ConfigFile": {
+      "Description" : "Nginx config file",
+      "Type": "String",
+      "Default": ""
+    }
+
+  },
+
+  "Mappings" : {
+    "AWSRegionArch2AMI" : {
+      "us-east-1"        : { "HVM64" : "ami-60b6c60a", "ubuntu" : "ami-fce3c696", "az" : "us-east-1a"},
+      "eu-west-1"        : { "HVM64" : "ami-bff32ccc", "ubuntu" : "ami-f95ef58a", "az" : "eu-west-1a"}
+    }
+  },
+
+  "Resources" : {
+    "EC2Instance" : {
+      "Type" : "AWS::EC2::Instance",
+      "Properties" : {
+        "InstanceType" : "t2.micro",
+        "IamInstanceProfile": { "Ref": "EC2Profile" },
+        "SecurityGroupIds" : [ { "Fn::GetAtt" : ["InstanceSecurityGroup", "GroupId" ] } ],
+        "KeyName" : { "Ref" : "KeyName" },
+        "ImageId" : { "Fn::FindInMap" : [ "AWSRegionArch2AMI", { "Ref" : "AWS::Region" }, "ubuntu" ] },
+        "Tags" : [{ "Key" : "Name", "Value" : "letsencrypt" }],
+        "UserData": { "Fn::Base64" :
+          {"Fn::Join": [ "", [
+            "#!/bin/bash\n",
+            "export LC_ALL=en_US.UTF-8\n",
+            "echo 'export LC_ALL=en_US.UTF-8' >> /etc/bash.bashrc\n",
+
+            "aptitude update && aptitude install -y nginx git awscli \n",
+            "git clone https://github.com/letsencrypt/letsencrypt /tmp/letsencrypt\n",
+            "cd /tmp/letsencrypt && ./letsencrypt-auto --help\n",
+            "echo \"Run $(date)\" >> /tmp/run.txt\n",
+            "`aws s3api get-object --bucket ",  {"Ref": "Bucket"}, " --key ", {"Ref": "ConfigFile"}, "/etc/nginx/conf.d/letsencrypt.conf`\n",
+            "echo \"Run $(date)\" >> /tmp/run.txt"
+          ] ]}
+        }
+      }
+    },
+
+    "InstanceSecurityGroup" : {
+      "Type" : "AWS::EC2::SecurityGroup",
+      "Properties" : {
+        "GroupDescription" : "Enable SSH access via port HTTP, HTTPS and SSH",
+        "SecurityGroupIngress" : [
+          {
+            "IpProtocol" : "tcp",
+            "FromPort" : "80",
+            "ToPort" : "80",
+            "CidrIp" : "0.0.0.0/0"
+          },
+          {
+            "IpProtocol" : "tcp",
+            "FromPort" : "443",
+            "ToPort" : "443",
+            "CidrIp" : "0.0.0.0/0"
+          },
+          {
+            "IpProtocol" : "tcp",
+            "FromPort" : "22",
+            "ToPort" : "22",
+            "CidrIp" : "0.0.0.0/0"
+          }]
+      }
+    },
+
+
+    "IPAddress" : {
+      "Type" : "AWS::EC2::EIP"
+    },
+
+    "IPAssoc" : {
+      "Type" : "AWS::EC2::EIPAssociation",
+      "Properties" : {
+        "InstanceId" : { "Ref" : "EC2Instance" },
+        "EIP" : { "Ref" : "IPAddress" }
+      }
+    },
+
+
+    "EC2Profile": {
+      "Type": "AWS::IAM::InstanceProfile",
+      "Properties": {
+        "Roles": [{
+          "Ref": "EC2Role"
+        }],
+        "Path": "/"
+      }
+    },
+    "EC2Role": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": {
+              "Service": ["ec2.amazonaws.com"]
+            },
+            "Action": ["sts:AssumeRole"]
+          }]
+        },
+        "Path": "/",
+        "ManagedPolicyArns": ["arn:aws:iam::aws:policy/AdministratorAccess"]
+      }
+    },
+    "DNS": {
+      "Type": "AWS::Route53::RecordSetGroup",
+      "Properties": {
+        "HostedZoneId": "Z1YU7ELN5AGQ2F",
+        "RecordSets": [
+          {
+            "Name": "letsencrypt.aws.jerep6.fr",
+            "Type": "A",
+            "TTL": "10",
+            "ResourceRecords": [{ "Ref" : "IPAddress" }]
+          }
+        ]
+      }
+    }
+  },
+
+
+  "Outputs" : {
+    "InstanceId" : {
+      "Description" : "InstanceId of the newly created EC2 instance",
+      "Value" : { "Ref" : "EC2Instance" }
+    },
+    "AZ" : {
+      "Description" : "Availability Zone of the newly created EC2 instance",
+      "Value" : { "Fn::GetAtt" : [ "EC2Instance", "AvailabilityZone" ] }
+    },
+    "PublicDNS" : {
+      "Description" : "Public DNSName of the newly created EC2 instance",
+      "Value" : { "Fn::GetAtt" : [ "EC2Instance", "PublicDnsName" ] }
+    },
+    "PublicIP" : {
+      "Description": "Public IP address of the newly created EC2 instance",
+      "Value": { "Fn::GetAtt": [ "EC2Instance", "PublicIp" ] }
+    },
+    "EC2RoleArn": {
+      "Description": "EC2Role created in the Environment AWS Account",
+      "Value": { "Fn::GetAtt" : [ "EC2Role", "Arn" ] }
+    }
+  }
+}
