@@ -100,8 +100,8 @@ if __FILE__ == $0
   if hook_stage == "deploy_challenge"
     puts "Challenge: #{txt_challenge}" unless hook_stage == "deploy_cert"
     setup_dns(domain, fqdn, txt_challenge)
-  elsif hook_stage == "clean_challenge"
-    delete_dns(domain, fqdn, txt_challenge)
+#  elsif hook_stage == "clean_challenge"
+#    delete_dns(domain, fqdn, txt_challenge)
   elsif hook_stage == "deploy_cert"
     puts "    Certs: #{txt_challenge}" if hook_stage == "deploy_cert"
   end
