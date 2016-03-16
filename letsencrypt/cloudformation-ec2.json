@@ -23,7 +23,7 @@
 
   "Mappings" : {
     "AWSRegionArch2AMI" : {
-      "us-east-1"        : { "HVM64" : "ami-60b6c60a", "ubuntu" : "ami-fce3c696", "az" : "us-east-1a"},
+      "us-east-1"        : { "HVM64" : "ami-60b6c60a", "ubuntu" : "ami-fce3c696", "az" : "us-east-1b"},
       "eu-west-1"        : { "HVM64" : "ami-bff32ccc", "ubuntu" : "ami-f95ef58a", "az" : "eu-west-1a"}
     }
   },
@@ -41,15 +41,25 @@
         "UserData": { "Fn::Base64" :
           {"Fn::Join": [ "", [
             "#!/bin/bash\n",
+            "echo \"Run begin $(date)\" >> /tmp/run.txt\n",
             "export LC_ALL=en_US.UTF-8\n",
             "echo 'export LC_ALL=en_US.UTF-8' >> /etc/bash.bashrc\n",
+            "echo '\"\e[A\": history-search-backward' >> /etc/inputrc\n",
+            "echo '\"\e[B\": history-search-forward' >> /etc/inputrc\n",
 
-            "aptitude update && aptitude install -y nginx git awscli \n",
-            "git clone https://github.com/letsencrypt/letsencrypt /tmp/letsencrypt\n",
-            "cd /tmp/letsencrypt && ./letsencrypt-auto --help\n",
-            "echo \"Run $(date)\" >> /tmp/run.txt\n",
+
+            "aptitude update && aptitude install -y nginx git awscli ruby\n",
+            "gem install domainatrix aws-sdk pry awesome_print\n",
+            "\n",
             "`aws s3api get-object --bucket ",  {"Ref": "Bucket"}, " --key ", {"Ref": "ConfigFile"}, "/etc/nginx/conf.d/letsencrypt.conf`\n",
-            "echo \"Run $(date)\" >> /tmp/run.txt"
+            "\n",
+            "git clone https://github.com/letsencrypt/letsencrypt /tmp/letsencrypt-official\n",
+            "cd /tmp/letsencrypt && ./letsencrypt-auto --help\n",
+            "\n",
+            "git clone https://github.com/lukas2511/letsencrypt.sh /tmp/letsencrypt.sh\n",
+            "wget https://raw.githubusercontent.com/jerep6/https/master/letsencrypt/hook-dns-01.rb -O /tmp/letsencrypt.sh/hook-dns-01.rb\n",
+            "chmod +x /tmp/letsencrypt.sh/hook-dns-01.rb\n",
+            "echo \"Run end $(date)\" >> /tmp/run.txt"
           ] ]}
         }
       }
@@ -78,6 +88,47 @@
             "ToPort" : "22",
             "CidrIp" : "0.0.0.0/0"
           }]
+      }
+    },
+
+    "ELB": {
+      "Type": "AWS::ElasticLoadBalancing::LoadBalancer",
+      "Properties": {
+        "AvailabilityZones": [{ "Fn::FindInMap" : [ "AWSRegionArch2AMI", { "Ref" : "AWS::Region" }, "az" ] }],
+        "ConnectionDrainingPolicy": {
+          "Enabled" : true,
+          "Timeout" : "300"
+        },
+        "CrossZone": true,
+        "HealthCheck": {
+          "HealthyThreshold": "2",
+          "Interval": "10",
+          "Target": "TCP:8080",
+          "Timeout": "5",
+          "UnhealthyThreshold": "5"
+        },
+        "Listeners": [{
+          "InstancePort": "80",
+          "InstanceProtocol": "http",
+          "LoadBalancerPort": "80",
+          "Protocol": "http"
+        }],
+        "SecurityGroups": [{ "Fn::GetAtt": ["ELBSecurityGroup", "GroupId"]}],
+        "Scheme" : "internet-facing"
+      }
+    },
+
+    "ELBSecurityGroup" : {
+      "Type" : "AWS::EC2::SecurityGroup",
+      "Properties" : {
+        "GroupDescription": "security group",
+        "SecurityGroupIngress" : [{
+          "IpProtocol" : "tcp",
+          "FromPort" : "80",
+          "ToPort" : "80",
+          "CidrIp" : "0.0.0.0/0"
+        }
+        ]
       }
     },
 
@@ -127,10 +178,16 @@
         "HostedZoneId": "Z1YU7ELN5AGQ2F",
         "RecordSets": [
           {
-            "Name": "letsencrypt.aws.jerep6.fr",
+            "Name": "letsencrypt-ec2.aws.jerep6.fr",
             "Type": "A",
             "TTL": "10",
             "ResourceRecords": [{ "Ref" : "IPAddress" }]
+          },
+          {
+            "Name": "letsencrypt-elb.aws.jerep6.fr",
+            "Type": "CNAME",
+            "TTL": "10",
+            "ResourceRecords": [{ "Fn::GetAtt": ["ELB", "DNSName"]}]
           }
         ]
       }
@@ -158,6 +215,14 @@
     "EC2RoleArn": {
       "Description": "EC2Role created in the Environment AWS Account",
       "Value": { "Fn::GetAtt" : [ "EC2Role", "Arn" ] }
+    },
+    "ELBId": {
+      "Description": "Id of the newly created ELB",
+      "Value": {"Ref": "ELB"}
+    },
+    "ELBDNS": {
+      "Description": "Public DNS the newly created ELB",
+      "Value": { "Fn::GetAtt": ["ELB", "DNSName"]}
     }
   }
 }
