@@ -8,21 +8,19 @@
       "Type": "AWS::EC2::KeyPair::KeyName",
       "ConstraintDescription" : "must be the name of an existing EC2 KeyPair."
     },
-    "Bucket": {
-      "Description" : "Bucket",
-      "Type": "String",
-      "Default": ""
+    "DomainEC2": {
+      "Description" : "Domain name for ec2 instance",
+      "Type": "String"
     },
-    "ConfigFile": {
-      "Description" : "Nginx config file",
-      "Type": "String",
-      "Default": ""
+    "DomainELB": {
+      "Description" : "Domain name for ELB",
+      "Type": "String"
     }
 
   },
 
   "Mappings" : {
-    "AWSRegionArch2AMI" : {
+    "AWSRegionArch2AMI"  : {
       "us-east-1"        : { "HVM64" : "ami-60b6c60a", "ubuntu" : "ami-fce3c696", "az" : "us-east-1b"},
       "eu-west-1"        : { "HVM64" : "ami-bff32ccc", "ubuntu" : "ami-f95ef58a", "az" : "eu-west-1a"}
     }
@@ -31,6 +29,49 @@
   "Resources" : {
     "EC2Instance" : {
       "Type" : "AWS::EC2::Instance",
+      "Metadata": {
+        "AWS::CloudFormation::Init" : {
+          "config" : {
+            "files" : {
+              "/etc/nginx/sites-enabled/letsencrypt.conf" : {
+                "content" : { "Fn::Join" : ["", [
+                  "server {\n",
+                  "\tlisten 80;\n",
+                  "\tlisten 443 ssl;\n",
+                  "\tserver_name ", {"Ref": "DomainEC2"}, ";\n",
+                  "\tssl_certificate /etc/letsencrypt/live/", {"Ref": "DomainEC2"}, "/fullchain.pem;\n",
+                  "\tssl_certificate_key /etc/letsencrypt/live/", {"Ref": "DomainEC2"}, "/privkey.pem;\n",
+                  "\troot /usr/share/nginx/html;\n",
+                  "\tindex index.html index.htm;\n",
+                  "}\n"
+                ]]},
+                "mode"  : "000644",
+                "owner" : "root",
+                "group" : "root"
+              },
+              "/usr/share/nginx/html/index.html" : {
+                "content" : { "Fn::Join" : ["", [
+                  "<!DOCTYPE html>\n",
+                  "<html><head>\n",
+                  "<title>Welcome to nginx!</title>\n",
+                  "<style> body { width: 800px; margin: 0 auto; } </style>\n",
+                  "</head>\n",
+                  "<body>\n",
+                  "<h1>Let's Encrypt</h1>\n",
+                  "<img src=\"logo.png\" />\n",
+                  "</body></html>"
+                ]]},
+                "mode"  : "000644",
+                "owner" : "root",
+                "group" : "root"
+              },
+              "/usr/share/nginx/html/logo.png" : {
+                "source" : "https://raw.githubusercontent.com/jerep6/https/master/letsencrypt/breizhcamp-logo.png"
+              }
+            }
+          }
+        }
+      },
       "Properties" : {
         "InstanceType" : "t2.micro",
         "IamInstanceProfile": { "Ref": "EC2Profile" },
@@ -44,21 +85,22 @@
             "echo \"Run begin $(date)\" >> /tmp/run.txt\n",
             "export LC_ALL=en_US.UTF-8\n",
             "echo 'export LC_ALL=en_US.UTF-8' >> /etc/bash.bashrc\n",
-            "echo '\"\e[A\": history-search-backward' >> /etc/inputrc\n",
-            "echo '\"\e[B\": history-search-forward' >> /etc/inputrc\n",
 
-
-            "aptitude update && aptitude install -y nginx git awscli ruby\n",
+            "aptitude update && aptitude install -y nginx git awscli ruby python-pip\n",
             "gem install domainatrix aws-sdk pry awesome_print\n",
-            "\n",
-            "`aws s3api get-object --bucket ",  {"Ref": "Bucket"}, " --key ", {"Ref": "ConfigFile"}, "/etc/nginx/conf.d/letsencrypt.conf`\n",
-            "\n",
+            "rm /etc/nginx/sites-enabled/default\n",
+
             "git clone https://github.com/letsencrypt/letsencrypt /tmp/letsencrypt-official\n",
-            "cd /tmp/letsencrypt && ./letsencrypt-auto --help\n",
+            "cd /tmp/letsencrypt-official && ./letsencrypt-auto --help\n",
             "\n",
             "git clone https://github.com/lukas2511/letsencrypt.sh /tmp/letsencrypt.sh\n",
             "wget https://raw.githubusercontent.com/jerep6/https/master/letsencrypt/hook-dns-01.rb -O /tmp/letsencrypt.sh/hook-dns-01.rb\n",
             "chmod +x /tmp/letsencrypt.sh/hook-dns-01.rb\n",
+
+            "easy_install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz\n",
+            "cfn-init -v -s ", { "Ref" : "AWS::StackName" },
+            " -r EC2Instance",
+            " --region ", { "Ref" : "AWS::Region" }, "\n",
             "echo \"Run end $(date)\" >> /tmp/run.txt"
           ] ]}
         }
@@ -94,6 +136,7 @@
     "ELB": {
       "Type": "AWS::ElasticLoadBalancing::LoadBalancer",
       "Properties": {
+        "LoadBalancerName": "letsencrypt-elb",
         "AvailabilityZones": [{ "Fn::FindInMap" : [ "AWSRegionArch2AMI", { "Ref" : "AWS::Region" }, "az" ] }],
         "ConnectionDrainingPolicy": {
           "Enabled" : true,
@@ -103,7 +146,7 @@
         "HealthCheck": {
           "HealthyThreshold": "2",
           "Interval": "10",
-          "Target": "TCP:8080",
+          "Target": "TCP:80",
           "Timeout": "5",
           "UnhealthyThreshold": "5"
         },
@@ -114,7 +157,8 @@
           "Protocol": "http"
         }],
         "SecurityGroups": [{ "Fn::GetAtt": ["ELBSecurityGroup", "GroupId"]}],
-        "Scheme" : "internet-facing"
+        "Scheme" : "internet-facing",
+        "Instances": [{"Ref": "EC2Instance"}]
       }
     },
 
@@ -127,7 +171,13 @@
           "FromPort" : "80",
           "ToPort" : "80",
           "CidrIp" : "0.0.0.0/0"
-        }
+        },
+          {
+            "IpProtocol" : "tcp",
+            "FromPort" : "443",
+            "ToPort" : "443",
+            "CidrIp" : "0.0.0.0/0"
+          }
         ]
       }
     },
@@ -178,13 +228,13 @@
         "HostedZoneId": "Z1YU7ELN5AGQ2F",
         "RecordSets": [
           {
-            "Name": "letsencrypt-ec2.aws.jerep6.fr",
+            "Name": {"Ref": "DomainEC2"},
             "Type": "A",
             "TTL": "10",
             "ResourceRecords": [{ "Ref" : "IPAddress" }]
           },
           {
-            "Name": "letsencrypt-elb.aws.jerep6.fr",
+            "Name": {"Ref": "DomainELB"},
             "Type": "CNAME",
             "TTL": "10",
             "ResourceRecords": [{ "Fn::GetAtt": ["ELB", "DNSName"]}]
@@ -223,6 +273,14 @@
     "ELBDNS": {
       "Description": "Public DNS the newly created ELB",
       "Value": { "Fn::GetAtt": ["ELB", "DNSName"]}
+    },
+    "DomainEC2": {
+      "Description": "Domain of ec2 instance",
+      "Value": { "Ref": "DomainEC2"}
+    },
+    "DomainELB": {
+      "Description": "Domain of elb",
+      "Value": { "Ref": "DomainELB"}
     }
   }
 }
